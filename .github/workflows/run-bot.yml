@@ -5,6 +5,7 @@ on:
   schedule:
     # 15:45 UTC every day = 16:45 Lagos time (UTC+1)
     - cron: "45 15 * * *"
+workflow_dispatch:
 
 jobs:
   run-bot:
