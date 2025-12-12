@@ -32,7 +32,7 @@ DEFAULTS = {
     "fees_slip": 0.0015,
     "tp_pct": 30.0,           # TP 30%
     "sl_default": 5.0,
-    "buy_time": "13:59:59",   # wait until this Lagos time
+    "buy_time": "14:59:59",   # wait until this Lagos time
     "buy_pct_balance": 1.0,   # use 1% of balance in total
     "buy_fixed_usdt": 10.0,
 }
