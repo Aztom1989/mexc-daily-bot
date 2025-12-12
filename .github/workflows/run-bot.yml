@@ -1,0 +1,30 @@
+name: run-mexc-bot-daily
+
+on:
+  schedule:
+    # 15:45 UTC every day = 16:45 Lagos time (UTC+1)
+    - cron: "45 15 * * *"
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          MEXC_KEY: ${{ secrets.MEXC_KEY }}
+          MEXC_SECRET: ${{ secrets.MEXC_SECRET }}
+        run: |
+          python bot.py
