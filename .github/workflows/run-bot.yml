@@ -3,7 +3,7 @@ name: run-mexc-bot-daily
 on:
   # 09:45 UTC every day = 10:45 Lagos time (UTC+1)
   schedule:
-    - cron: "45 9 * * *"
+    - cron: "49 10 * * *"
   # Allow manual runs from the Actions tab
   workflow_dispatch:
 
