@@ -24,15 +24,15 @@ DEFAULT_MEXC_SECRET = os.getenv("MEXC_SECRET", "")
 SUPPORTED_EXCHANGES = ["mexc", "kucoin", "gate", "bybit", "okx", "binance"]
 
 DEFAULTS = {
-    "vol_min":  50_000,
-    "vol_max":  2_000_000,
+    "vol_min":  10_000_000,
+    "vol_max":  900_000_000,
     "history_days": 7,
     "target_str": "50",       # default 50%
     "anchor_hour": 17,
     "fees_slip": 0.0015,
     "tp_pct": 30.0,           # TP 30%
     "sl_default": 5.0,
-    "buy_time": "16:59:59",   # wait until this Lagos time
+    "buy_time": "18:59:59",   # wait until this Lagos time
     "buy_pct_balance": 1.0,   # use 1% of balance in total
     "buy_fixed_usdt": 10.0,
 }
