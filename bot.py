@@ -30,7 +30,7 @@ DEFAULTS = {
     "target_str": "50",       # default 50%
     "anchor_hour": 17,
     "fees_slip": 0.0015,
-    "tp_pct": 30.0,           # TP 30%
+    "tp_pct": 50.0,           # TP 50%
     "sl_default": 5.0,
     "buy_time": "16:59:59",   # wait until this Lagos time
     "buy_pct_balance": 1.0,   # use 1% of balance in total
