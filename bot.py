@@ -25,7 +25,7 @@ SUPPORTED_EXCHANGES = ["mexc", "kucoin", "gate", "bybit", "okx", "binance"]
 
 DEFAULTS = {
     "vol_min":  50_000,
-    "vol_max":  2_000_000,
+    "vol_max":  3_000_000,
     "history_days": 7,
     "target_str": "50",       # default 50%
     "anchor_hour": 17,
