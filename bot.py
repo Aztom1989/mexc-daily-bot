@@ -33,7 +33,7 @@ DEFAULTS = {
     "tp_pct": 50.0,           # TP 50%
     "sl_default": 5.0,
     "buy_time": "16:59:59",   # wait until this Lagos time
-    "buy_pct_balance": 1.0,   # use 1% of balance in total
+    "buy_pct_balance": 50.0,   # use 50% of balance in total
     "buy_fixed_usdt": 10.0,
 }
 
