@@ -33,7 +33,7 @@ jobs:
           MIN_DAYS_OLD: "3"
           VOL_MIN: "1000000"
           VOL_MAX: "600000000"
-          TARGET_PCT: "50"
+          TARGET_PCT: "3"
           ANCHOR_HOUR: "15"
           TOP_N: "20"
 
