@@ -1,10 +1,8 @@
 name: run-mexc-bot-daily
 
 on:
-  # 31:14 UTC every day = 15:31 Lagos time (UTC+1)
   schedule:
-    - cron: "31 14 * * *"
-  # Allow manual runs from the Actions tab
+    - cron: "50 09 * * *"   # 10:50 Lagos (UTC+1)
   workflow_dispatch:
 
 jobs:
@@ -29,5 +27,22 @@ jobs:
         env:
           MEXC_KEY: ${{ secrets.MEXC_KEY }}
           MEXC_SECRET: ${{ secrets.MEXC_SECRET }}
+
+          # Screener settings
+          HISTORY_DAYS: "30"
+          MIN_DAYS_OLD: "3"
+          VOL_MIN: "100000"
+          VOL_MAX: "6000000"
+          TARGET_PCT: "50"
+          ANCHOR_HOUR: "17"
+          TOP_N: "20"
+
+          # Trading settings (optional)
+          DO_BUY: "0"              # 1 = trade, 0 = scan only
+          BUY_RANKS: "1"
+          BUY_TIME: "16:59:58"     # Lagos time
+          BUY_PCT_BALANCE: "50"
+          TP_PCT: "50"
+
         run: |
           python bot.py
