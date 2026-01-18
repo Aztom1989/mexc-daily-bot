@@ -2,7 +2,7 @@ name: run-mexc-bot-daily
 
 on:
   schedule:
-    - cron: "25 14 * * *"   # 15:25 Lagos (UTC+1)
+    - cron: "57 14 * * *"   # 15:57 Lagos (UTC+1)
   workflow_dispatch:
 
 jobs:
@@ -31,16 +31,16 @@ jobs:
           # Screener settings
           HISTORY_DAYS: "30"
           MIN_DAYS_OLD: "3"
-          VOL_MIN: "1000000"
-          VOL_MAX: "600000000"
-          TARGET_PCT: "3"
-          ANCHOR_HOUR: "15"
+          VOL_MIN: "100000"
+          VOL_MAX: "60000000"
+          TARGET_PCT: "50"
+          ANCHOR_HOUR: "17"
           TOP_N: "20"
 
           # Trading settings (optional)
           DO_BUY: "1"              # 1 = trade, 0 = scan only
-          BUY_RANKS: "1"
-          BUY_TIME: "15:45:58"     # Lagos time
+          BUY_RANKS: "1,2"
+          BUY_TIME: "16:59:57"     # Lagos time
           BUY_PCT_BALANCE: "50"
           TP_PCT: "50"
 
