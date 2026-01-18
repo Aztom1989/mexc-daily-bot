@@ -49,9 +49,9 @@ ANCHOR_HOUR    = env_int("ANCHOR_HOUR", 10)
 
 TOP_N          = env_int("TOP_N", 20)
 
-DO_BUY         = env_int("DO_BUY", 0)
+DO_BUY         = env_int("DO_BUY", 1)
 BUY_RANKS      = env_str("BUY_RANKS", "1")
-BUY_TIME       = env_str("BUY_TIME", "12:30:58")
+BUY_TIME       = env_str("BUY_TIME", "13:59:58")
 BUY_PCT_BALANCE = env_float("BUY_PCT_BALANCE", 50.0)
 TP_PCT          = env_float("TP_PCT", 50.0)
 
