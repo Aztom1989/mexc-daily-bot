@@ -1,10 +1,11 @@
 # bot.py
-# Headless version of your screener + auto-buy (for GitHub Actions).
-# No widgets, no Colab UI.
+# MEXC 17:00 Lagos candle screener (FINAL-ONLY output)
+# HIT definition:
+#   Within the 17:00–18:00 Lagos 1h candle, (HIGH / OPEN - 1) >= TARGET_PCT
+# Optional auto-buy.
 
-import os, time, math, re, sys, warnings
-from decimal import Decimal, ROUND_DOWN
-from datetime import datetime, timedelta, timezone
+import os, time, re, sys, warnings
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -13,52 +14,68 @@ import pytz
 
 warnings.filterwarnings("ignore")
 
-# -------- BASIC SETTINGS --------
 LOCAL_TZ = "Africa/Lagos"
+TZ_LAGOS = pytz.timezone(LOCAL_TZ)
 
-# MEXC keys come from GitHub Secrets (MEXC_KEY, MEXC_SECRET)
-# You can also hard-code here for local testing, but NOT recommended on GitHub.
-DEFAULT_MEXC_KEY    = os.getenv("MEXC_KEY", "")
-DEFAULT_MEXC_SECRET = os.getenv("MEXC_SECRET", "")
+MEXC_KEY    = os.getenv("MEXC_KEY", "")
+MEXC_SECRET = os.getenv("MEXC_SECRET", "")
 
-SUPPORTED_EXCHANGES = ["mexc", "kucoin", "gate", "bybit", "okx", "binance"]
+def env_float(name, default):
+    v = os.getenv(name, "")
+    try:
+        return float(v) if v != "" else float(default)
+    except:
+        return float(default)
 
-DEFAULTS = {
-    "vol_min":  50_000,
-    "vol_max":  3_000_000,
-    "history_days": 7,
-    "target_str": "50",       # default 50%
-    "anchor_hour": 17,
-    "fees_slip": 0.0015,
-    "tp_pct": 50.0,           # TP 50%
-    "sl_default": 5.0,
-    "buy_time": "16:59:58",   # wait until this Lagos time
-    "buy_pct_balance": 50.0,   # use 50% of balance in total
-    "buy_fixed_usdt": 10.0,
-}
+def env_int(name, default):
+    v = os.getenv(name, "")
+    try:
+        return int(v) if v != "" else int(default)
+    except:
+        return int(default)
 
-# -------------------------
-# Utility helpers
-# -------------------------
+def env_str(name, default):
+    v = os.getenv(name, "")
+    return v if v != "" else str(default)
+
+HISTORY_DAYS   = env_int("HISTORY_DAYS", 30)
+MIN_DAYS_OLD   = env_int("MIN_DAYS_OLD", 3)
+
+VOL_MIN        = env_float("VOL_MIN", 10_000_000)
+VOL_MAX        = env_float("VOL_MAX", 600_000_000)
+
+TARGET_PCT     = env_float("TARGET_PCT", 3.0)
+ANCHOR_HOUR    = env_int("ANCHOR_HOUR", 10)
+
+TOP_N          = env_int("TOP_N", 20)
+
+DO_BUY         = env_int("DO_BUY", 0)
+BUY_RANKS      = env_str("BUY_RANKS", "1")
+BUY_TIME       = env_str("BUY_TIME", "11:30:58")
+BUY_PCT_BALANCE = env_float("BUY_PCT_BALANCE", 50.0)
+TP_PCT          = env_float("TP_PCT", 50.0)
+
+MAX_RETRIES    = 4
+
+LEVERAGED_PATTERNS = [
+    r".*\d+[LS]$",
+    r".*(UP|DOWN)$",
+    r".*(BULL|BEAR)$",
+    r".*(3L|3S|5L|5S|10L|10S|20L|20S|50L|50S|100L|100S)$",
+]
+
 def log(msg=""):
     print(msg)
     sys.stdout.flush()
 
-def parse_targets(target_str):
-    s = (target_str or "").replace(" ", "")
-    if not s:
-        return [50.0]
-    out = []
-    for part in s.split(","):
-        if not part:
-            continue
-        try:
-            v = float(part)
-            if v > 0:
-                out.append(v)
-        except:
-            pass
-    return out[:10] or [50.0]
+def is_leveraged_token(base):
+    if not base:
+        return False
+    b = str(base).upper().replace("-", "").replace("_", "")
+    for pat in LEVERAGED_PATTERNS:
+        if re.match(pat, b):
+            return True
+    return False
 
 def safe_quote_volume(tkr):
     if not tkr:
@@ -79,45 +96,62 @@ def safe_quote_volume(tkr):
                 pass
     return None
 
-def make_exchange(ex_id, api_key="", api_secret="", password=""):
-    cls = getattr(ccxt, ex_id)
+def make_exchange(public_only=True):
     params = {
         "enableRateLimit": True,
-        "options": {
-            "defaultType": "spot",
-            "adjustForTimeDifference": True,
-        }
+        "timeout": 30000,
+        "options": {"defaultType": "spot", "adjustForTimeDifference": True},
     }
-    if api_key and api_secret:
-        params["apiKey"] = api_key
-        params["secret"] = api_secret
-    if password:
-        params["password"] = password
-    ex = cls(params)
-    return ex
+    if not public_only and MEXC_KEY and MEXC_SECRET:
+        params["apiKey"] = MEXC_KEY
+        params["secret"] = MEXC_SECRET
+    return ccxt.mexc(params)
 
-# Leveraged token filter (btc5L, SOMEBULL, etc.)
-LEVERAGED_PATTERNS = [
-    r".*\d+[LS]$",
-    r".*(UP|DOWN)$",
-    r".*(BULL|BEAR)$",
-    r".*(3L|3S|5L|5S|10L|10S|20L|20S|50L|50S|100L|100S)$",
-]
+def fetch_ohlcv_1h(ex, symbol, since_ms, limit=1000):
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            data = ex.fetch_ohlcv(symbol, timeframe="1h", since=since_ms, limit=limit)
+            if not data:
+                return None
+            df = pd.DataFrame(data, columns=["ts","open","high","low","close","volume"])
+            df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+            return df
+        except Exception:
+            time.sleep(0.7 * attempt)
+    return None
 
-def is_leveraged_token(base):
-    if not base:
-        return False
-    b = str(base).upper().replace("-", "").replace("_", "")
-    for pat in LEVERAGED_PATTERNS:
-        if re.match(pat, b):
-            return True
-    return False
+def build_daily_17h_metrics(df_1h: pd.DataFrame, anchor_hour: int) -> pd.DataFrame:
+    if df_1h is None or df_1h.empty:
+        return pd.DataFrame()
 
-def pick_spot_symbols(ex, ex_id, quote, vol_min, vol_max):
+    d = df_1h.copy().sort_values("ts")
+    d["ts_lagos"] = d["ts"].dt.tz_convert(TZ_LAGOS)
+    d["day_lagos"] = d["ts_lagos"].dt.normalize()
+    d["hour_lagos"] = d["ts_lagos"].dt.hour
+
+    d["quote_vol"] = d["volume"] * d["close"]
+    daily = d.groupby("day_lagos").agg(daily_quote_vol=("quote_vol","sum"))
+
+    cA = d[d["hour_lagos"] == anchor_hour].groupby("day_lagos").agg(
+        openA=("open","first"),
+        highA=("high","max"),
+        lowA=("low","min"),
+        closeA=("close","last"),
+    )
+
+    out = daily.join(cA, how="inner").dropna(subset=["daily_quote_vol","openA","highA"])
+    out["ret_open_to_high"] = (out["highA"] / out["openA"]) - 1.0
+    out["ret_open_to_low"]  = (out["lowA"] / out["openA"]) - 1.0
+    return out
+
+def laplace_smooth(hits: int, n: int) -> float:
+    return (hits + 1.0) / (n + 2.0)
+
+def pick_symbols_in_24h_volume_range(ex, quote="USDT", vol_min=0, vol_max=1e18):
     mk = ex.load_markets()
     tix = ex.fetch_tickers()
 
-    symbols = []
+    symbols, vol_map = [], {}
     for s, m in mk.items():
         try:
             if not m.get("spot"):
@@ -126,125 +160,47 @@ def pick_spot_symbols(ex, ex_id, quote, vol_min, vol_max):
                 continue
             if m.get("active") is False:
                 continue
-            if ex_id == "gate" and is_leveraged_token(m.get("base")):
+            if is_leveraged_token(m.get("base")):
                 continue
-            t = tix.get(s, {})
-            qv = safe_quote_volume(t)
+
+            qv = safe_quote_volume(tix.get(s, {}))
             if qv is None:
                 continue
             if vol_min <= qv <= vol_max:
-                symbols.append((s, qv))
+                symbols.append(s)
+                vol_map[s] = float(qv)
         except:
             continue
-    return symbols  # list of (symbol, vol24)
 
-def timeframe_to_ms(tf):
-    unit = tf[-1]
-    n = int(tf[:-1])
-    if unit == "m":
-        return n * 60_000
-    if unit == "h":
-        return n * 3_600_000
-    if unit == "d":
-        return n * 86_400_000
-    raise ValueError("Bad timeframe "+tf)
+    return sorted(symbols), vol_map
 
-def safe_fetch_ohlcv_range(ex, symbol, timeframe, since_ms, until_ms, limit=1000):
-    tf_ms = timeframe_to_ms(timeframe)
-    rows = []
-    cursor = since_ms
-    max_errors = 5
-    errors = 0
-
-    while cursor < until_ms:
-        try:
-            candles = ex.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit)
-            if not candles:
-                break
-            rows.extend(candles)
-            last_ts = candles[-1][0]
-            nxt = last_ts + tf_ms
-            if nxt <= cursor:
-                break
-            cursor = nxt
-            time.sleep(ex.rateLimit / 1000.0)
-        except Exception as e:
-            errors += 1
-            if "time range" in str(e).lower():
-                cursor += 24 * 3_600_000
-            else:
-                time.sleep(0.5)
-            if errors >= max_errors:
-                break
-
-    if not rows:
-        return pd.DataFrame(columns=["ts","open","high","low","close","volume"])
-
-    df = pd.DataFrame(rows, columns=["ts","open","high","low","close","volume"])
-    df = df.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
-    return df
-
-def build_daily_windows(df, tzname, anchor_hour):
-    if df.empty:
-        return pd.DataFrame(columns=["t0","openA","max_high","min_low"])
-
-    dt_utc = pd.to_datetime(df["ts"], unit="ms", utc=True)
-    tz_loc = pytz.timezone(tzname)
-    df = df.copy()
-    df["dt_loc"] = dt_utc.dt.tz_convert(tz_loc)
-    df["date"] = df["dt_loc"].dt.date
-
-    rows = []
-    for d, g in df.groupby("date"):
-        g = g.copy()
-        g["hour"] = g["dt_loc"].dt.hour
-        g_after = g[g["hour"] >= anchor_hour]
-        if not g_after.empty:
-            row0 = g_after.iloc[0]
-        else:
-            row0 = g.iloc[0]
-        mask = g["ts"] >= row0["ts"]
-        win = g[mask]
-        if win.empty:
+def parse_ranks(s):
+    out = []
+    for part in (s or "").replace(" ", "").split(","):
+        if not part:
             continue
-        rows.append({
-            "t0": int(row0["ts"]),
-            "openA": float(row0["open"]),
-            "max_high": float(win["high"].max()),
-            "min_low": float(win["low"].min()),
-        })
-    return pd.DataFrame(rows)
+        try:
+            out.append(int(part))
+        except:
+            pass
+    return out
 
-def jeffreys_posterior(x, n):
-    alpha = x + 0.5
-    beta_ = n - x + 0.5
-    return alpha / (alpha + beta_)
-
-def suggest_sl_pct(p_ens, target_pct, sl_default):
-    p = max(0.01, min(0.99, float(p_ens)))
-    ratio = 0.25 + 0.75 * p
-    sl_from_target = target_pct * (1.0 - p) * ratio
-    return max(0.25 * target_pct, min(sl_default, sl_from_target))
-
-def make_tp_price(ex, symbol, filled_price, tp_pct):
-    raw = float(filled_price) * (1.0 + tp_pct / 100.0)
-    return float(ex.price_to_precision(symbol, raw))
-
-def make_amount(ex, symbol, base_amount):
-    return float(ex.amount_to_precision(symbol, float(base_amount)))
-
-# ========== COUNTDOWN UNTIL BUY TIME ==========
-def wait_until_exchange_time(ex, target_lagos_dt):
-    tz_lagos = pytz.timezone(LOCAL_TZ)
-    target_utc = target_lagos_dt.astimezone(pytz.UTC)
-    target_ms = int(target_utc.timestamp() * 1000)
-
+def wait_until_lagos_time(ex, buy_time_str):
+    if buy_time_str.strip().lower() == "now":
+        return
     try:
-        now_ms = ex.fetch_time()
-    except Exception:
-        now_ms = int(time.time() * 1000)
+        hh, mm, ss = [int(x) for x in buy_time_str.split(":")]
+    except:
+        log("⚠️ Bad BUY_TIME format; using NOW.")
+        return
 
-    total_secs = max(1, int((target_ms - now_ms) / 1000))
+    now_lagos = datetime.now(TZ_LAGOS)
+    target_dt = now_lagos.replace(hour=hh, minute=mm, second=ss, microsecond=0)
+    if target_dt <= now_lagos:
+        target_dt += timedelta(days=1)
+
+    target_utc = target_dt.astimezone(pytz.UTC)
+    target_ms = int(target_utc.timestamp() * 1000)
 
     while True:
         try:
@@ -254,354 +210,206 @@ def wait_until_exchange_time(ex, target_lagos_dt):
 
         remaining = (target_ms - now_ms) / 1000.0
         if remaining <= 0:
-            now_lagos = datetime.now(tz_lagos).strftime('%H:%M:%S')
-            now_utc = datetime.utcnow().strftime('%H:%M:%S')
-            bar_len = 28
-            bar = "#" * bar_len
-            line = (
-                f"\r⏳ Waiting until {target_lagos_dt.strftime('%Y-%m-%d %H:%M:%S')} | "
-                f"[{bar}] 00:00:00 remaining | "
-                f"Lagos now: {now_lagos} | UTC now: {now_utc}   "
-            )
-            print(line, end="")
-            sys.stdout.flush()
             break
-
-        elapsed = total_secs - remaining
-        pct = max(0.0, min(1.0, elapsed / total_secs))
-        bar_len = 28
-        done = int(bar_len * pct)
-        bar = "#" * done + "-" * (bar_len - done)
-
-        hrs, rem = divmod(int(remaining), 3600)
-        mins, secs = divmod(rem, 60)
-        now_lagos = datetime.now(tz_lagos).strftime('%H:%M:%S')
-        now_utc = datetime.utcnow().strftime('%H:%M:%S')
-
-        line = (
-            f"\r⏳ Waiting until {target_lagos_dt.strftime('%Y-%m-%d %H:%M:%S')} | "
-            f"[{bar}] {hrs:02d}:{mins:02d}:{secs:02d} remaining | "
-            f"Lagos now: {now_lagos} | UTC now: {now_utc}"
-        )
-        print(line, end="")
-        sys.stdout.flush()
         time.sleep(1.0)
 
-    print()
+def make_tp_price(ex, symbol, entry_price, tp_pct):
+    raw = float(entry_price) * (1.0 + tp_pct / 100.0)
+    return float(ex.price_to_precision(symbol, raw))
 
-# -------------------------
-# Core screener
-# -------------------------
-def run_screener(
-    ex_id="mexc",
-    quote="USDT",
-    timeframe="1h",
-    vol_min=50_000,
-    vol_max=2_000_000,
-    history_days=7,
-    target_list=None,
-    anchor_mode="hour",
-    anchor_hour=17,
-    use_local_tz=True,
-    fees_slip=0.0015,
-):
-    target_list = target_list or [50.0]
+def make_amount(ex, symbol, base_amount):
+    return float(ex.amount_to_precision(symbol, float(base_amount)))
 
-    tz_name = LOCAL_TZ if use_local_tz else "UTC"
-    tz_obj = pytz.timezone(tz_name)
-    now_loc = datetime.now(tz_obj)
+def run_screener():
+    target_frac = TARGET_PCT / 100.0
 
-    if anchor_mode == "now":
-        anchor_hour_used = now_loc.hour
-    else:
-        anchor_hour_used = int(anchor_hour)
+    log("=" * 80)
+    log("MEXC 17:00 Lagos Candle Screener (FINAL-ONLY output)")
+    log(f"HIT: (HIGH/OPEN - 1) >= {TARGET_PCT:.1f}% for the {ANCHOR_HOUR:02d}:00 candle")
+    log(f"History days: {HISTORY_DAYS} | Min valid days: {MIN_DAYS_OLD}")
+    log(f"Volume filter: {VOL_MIN:,.0f} to {VOL_MAX:,.0f} USDT")
+    log("=" * 80)
 
-    log("="*72)
-    log(f"CEX Screener — {ex_id.upper()} — Multi-Target ({timeframe})")
-    log(f"Quote: {quote} | Volume range: [{vol_min:,.0f}, {vol_max:,.0f}]")
-    log(f"Anchor TZ: {tz_name} | Anchor mode: {anchor_mode}")
-    log("="*72)
+    ex = make_exchange(public_only=True)
 
-    ex = make_exchange(ex_id)
-    log("🔌 Connecting (public)…")
-    server_time_ms = ex.fetch_time()
-    log(f"🕒 Exchange time: {datetime.utcfromtimestamp(server_time_ms/1000).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-
-    log("📈 Loading markets & tickers…")
-    syms_with_vol = pick_spot_symbols(ex, ex_id, quote, vol_min, vol_max)
-    if not syms_with_vol:
-        log("❌ No symbols in that volume range.")
+    symbols, vol24_map = pick_symbols_in_24h_volume_range(ex, quote="USDT", vol_min=VOL_MIN, vol_max=VOL_MAX)
+    if not symbols:
+        log("No symbols matched the 24h volume filter.")
         return None, None, ex
 
-    symbols = [s for (s, _) in syms_with_vol]
-    vol_map = {s: v for (s, v) in syms_with_vol}
-    log(f"✅ Symbols in range: {len(symbols)}")
+    now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    since_utc = now_utc - timedelta(days=HISTORY_DAYS + 2)
+    since_ms = int(since_utc.timestamp() * 1000)
 
-    end_loc = now_loc
-    start_loc = end_loc - timedelta(days=history_days+1)
-    since_ms = int(start_loc.astimezone(pytz.UTC).timestamp()*1000)
-    until_ms = int(end_loc.astimezone(pytz.UTC).timestamp()*1000)
+    limit = 1000 if HISTORY_DAYS <= 40 else 2000
 
-    tf = timeframe
-    all_rows = []
-    log(f"⏳ Pulling ~{history_days} days OHLCV & daily windows ({tz_name})…")
-    for i, s in enumerate(symbols, 1):
-        try:
-            df = safe_fetch_ohlcv_range(ex, s, tf, since_ms, until_ms)
-            if df.empty:
-                continue
-            win = build_daily_windows(df, tz_name, anchor_hour_used)
-            if win.empty:
-                continue
-            win["symbol"] = s
-            all_rows.append(win)
-        except Exception:
+    rows = []
+    skip_no_ohlcv = 0
+    skip_few_hours = 0
+    skip_few_days = 0
+    skip_median_vol = 0
+    errors = 0
+
+    start = time.time()
+
+    for sym in symbols:
+        df = fetch_ohlcv_1h(ex, sym, since_ms, limit=limit)
+        if df is None or df.empty:
+            skip_no_ohlcv += 1
             continue
-        if i % 50 == 0:
-            log(f"...pulled {i}/{len(symbols)}")
 
-    if not all_rows:
-        log("❌ No daily windows built.")
+        if len(df) < 24 * MIN_DAYS_OLD:
+            skip_few_hours += 1
+            continue
+
+        try:
+            daily = build_daily_17h_metrics(df, ANCHOR_HOUR).sort_index().tail(HISTORY_DAYS)
+            if len(daily) < MIN_DAYS_OLD:
+                skip_few_days += 1
+                continue
+
+            med_daily_vol = float(daily["daily_quote_vol"].median())
+            if not (VOL_MIN <= med_daily_vol <= VOL_MAX):
+                skip_median_vol += 1
+                continue
+
+            hits = int((daily["ret_open_to_high"] >= target_frac).sum())
+            n = int(len(daily))
+
+            p_smooth = laplace_smooth(hits, n)
+            avg_reach = float(daily["ret_open_to_high"].mean())
+            best_reach = float(daily["ret_open_to_high"].max())
+            worst_low  = float(daily["ret_open_to_low"].min())
+
+            score = (p_smooth * 1.0) + (np.tanh(avg_reach) * 0.25) + (np.tanh(best_reach) * 0.10)
+
+            rows.append({
+                "Pair": sym,
+                "HistDays": n,
+                "Hits": hits,
+                "P_hit_smooth": p_smooth,
+                "AvgOpenToHigh": avg_reach,
+                "BestOpenToHigh": best_reach,
+                "WorstOpenToLow": worst_low,
+                "Vol24h_quote": float(vol24_map.get(sym, np.nan)),
+                "MedianDailyQuoteVol": med_daily_vol,
+                "Score": score,
+            })
+
+        except Exception:
+            errors += 1
+
+    elapsed = time.time() - start
+
+    log("\nDONE.")
+    log(f"Total symbols in volume range: {len(symbols)}")
+    log(f"Kept: {len(rows)} | Errors: {errors}")
+    log(f"Skip reasons -> noOHLCV:{skip_no_ohlcv} | fewHours:{skip_few_hours} | fewDays17h:{skip_few_days} | medianVol:{skip_median_vol}")
+    log(f"Elapsed: {elapsed/60:.1f} min\n")
+
+    if not rows:
+        log("No symbols matched after filtering.")
         return None, None, ex
 
-    panel = pd.concat(all_rows, ignore_index=True)
-    results_all = []
+    result = pd.DataFrame(rows).sort_values(
+        ["Score","P_hit_smooth","Hits","HistDays","Vol24h_quote"],
+        ascending=[False, False, False, False, False]
+    ).reset_index(drop=True)
 
-    for target_pct in target_list:
-        target_frac = target_pct / 100.0
-        df = panel.copy()
-        df["runup"] = df["max_high"] / df["openA"] - 1.0
-        df["hit"] = (df["runup"] >= target_frac).astype(int)
+    result.insert(0, "Rank", np.arange(1, len(result) + 1))
 
-        grp = df.groupby("symbol").agg(
-            n_days=("hit", "count"),
-            hits=("hit", "sum")
-        ).reset_index()
+    fname = f"./mexc_17h_reach_{int(TARGET_PCT)}pct_{HISTORY_DAYS}d_min{MIN_DAYS_OLD}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    result.to_csv(fname, index=False)
 
-        grp["p_ens"] = jeffreys_posterior(grp["hits"], grp["n_days"])
-        grp["EV"] = grp["p_ens"] * target_frac - fees_slip
-        grp["Target_pct"] = target_pct
-        grp["Vol24h_quote"] = grp["symbol"].map(vol_map)
-        grp["SL_suggest_pct"] = [
-            suggest_sl_pct(p, target_pct, DEFAULTS["sl_default"])
-            for p in grp["p_ens"].values
-        ]
+    log("Top results:")
+    log(result.head(TOP_N).to_string(index=False))
+    log(f"\nSaved CSV: {fname}")
+    return result, fname, ex
 
-        grp = grp.sort_values(
-            ["p_ens", "hits", "n_days", "Vol24h_quote"],
-            ascending=[False, False, False, False]
-        ).reset_index(drop=True)
-        grp["Rank"] = np.arange(1, len(grp) + 1)
-        results_all.append(grp)
-
-    full = pd.concat(results_all, ignore_index=True)
-    full = full[["Rank", "Target_pct", "symbol", "n_days", "hits",
-                 "p_ens", "EV", "SL_suggest_pct", "Vol24h_quote"]]
-
-    pretty = full.rename(columns={
-        "Target_pct": "Target(%)",
-        "symbol": "Pair",
-        "n_days": "HistDays",
-        "SL_suggest_pct": "SL_suggest(%)",
-        "Vol24h_quote": "Vol24h_quote"
-    })
-
-    # Log first few rows in text
-    log("Top rows from screener:")
-    try:
-        log(pretty.head(10).to_string(index=False))
-    except Exception:
-        log(str(pretty.head(10)))
-
-    # Save CSV locally (only for logs / debugging)
-    fname = f"./{ex_id}_multiTarget_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    pretty.to_csv(fname, index=False)
-    log(f"Saved CSV: {fname}")
-
-    return pretty, fname, ex
-
-# -------------------------
-# Auto-buy (MEXC only)
-# -------------------------
-def auto_buy_from_results(
-    ex,
-    ex_id,
-    results_df,
-    ranks_to_buy,
-    mode_buy_size="pct",
-    pct_of_balance=1.0,
-    fixed_usdt=10.0,
-    tp_pct=30.0,
-    use_tp=True,
-    use_sl=False,
-    sl_value=None,
-    buy_time_str="now",
-):
-    if ex_id != "mexc":
-        log("⚠️ Auto-buy currently implemented only for MEXC.")
-        return
-
+def auto_buy_from_results(results_df: pd.DataFrame):
     if results_df is None or results_df.empty:
-        log("❌ No scan results to buy from.")
+        log("❌ No results to buy from.")
         return
 
-    ranks = []
-    for part in (ranks_to_buy or "").replace(" ", "").split(","):
-        if part:
-            try:
-                ranks.append(int(part))
-            except:
-                pass
+    ranks = parse_ranks(BUY_RANKS)
     if not ranks:
-        log("❌ No valid ranks given.")
+        log("❌ BUY_RANKS invalid.")
         return
 
-    chosen = results_df[results_df["Rank"].isin(ranks)].copy()
-    chosen = chosen.sort_values("Rank")
+    chosen = results_df[results_df["Rank"].isin(ranks)].copy().sort_values("Rank")
     if chosen.empty:
-        log("❌ None of those ranks found in results.")
+        log("❌ None of those ranks exist in results.")
         return
 
-    log("\n🔑 Connecting (trading)…")
-    trading = make_exchange(
-        "mexc",
-        api_key=DEFAULT_MEXC_KEY,
-        api_secret=DEFAULT_MEXC_SECRET,
-    )
+    if not MEXC_KEY or not MEXC_SECRET:
+        log("❌ Missing MEXC_KEY / MEXC_SECRET (GitHub Secrets).")
+        return
+
+    trading = make_exchange(public_only=False)
+
     bal = trading.fetch_balance()
-    quote_bal = float(bal.get("free", {}).get("USDT", 0.0))
-    log(f"💼 USDT balance: {quote_bal}")
+    usdt_free = float(bal.get("free", {}).get("USDT", 0.0))
+    log(f"💼 USDT free balance: {usdt_free:.4f}")
 
-    if mode_buy_size == "pct":
-        total_spend = quote_bal * (pct_of_balance / 100.0)
-    else:
-        total_spend = fixed_usdt * len(chosen)
-
+    total_spend = usdt_free * (BUY_PCT_BALANCE / 100.0)
     if total_spend <= 0:
         log("❌ Total spend <= 0.")
         return
+
     per_coin = total_spend / len(chosen)
-    log(f"💰 Will spend ≈ {per_coin:.4f} USDT per coin on {len(chosen)} coin(s).")
+    log(f"💰 Total spend ≈ {total_spend:.4f} | per coin ≈ {per_coin:.4f}")
 
-    tz_lagos = pytz.timezone(LOCAL_TZ)
-    if buy_time_str.strip().lower() == "now":
-        target_dt = datetime.now(tz_lagos)
-        log(f"\n🕒 Buy time: NOW ({target_dt.strftime('%H:%M:%S')} Lagos)")
-    else:
-        try:
-            hh, mm, ss = [int(x) for x in buy_time_str.split(":")]
-            now_lagos = datetime.now(tz_lagos)
-            target_dt = now_lagos.replace(hour=hh, minute=mm, second=ss, microsecond=0)
-            if target_dt <= now_lagos:
-                target_dt += timedelta(days=1)
-        except Exception:
-            target_dt = datetime.now(tz_lagos)
-            log("⚠️ Bad buy time, using NOW.")
-        wait_until_exchange_time(trading, target_dt)
+    wait_until_lagos_time(trading, BUY_TIME)
 
-    log("\n🚀 Starting auto-buy…")
+    log("🚀 Starting auto-buy...")
     for _, row in chosen.iterrows():
         symbol = row["Pair"]
-        sl_pct = float(sl_value) if (use_sl and sl_value is not None) else float(row["SL_suggest(%)"])
-
         try:
             ticker = trading.fetch_ticker(symbol)
             last = float(ticker["last"])
             base_amt = per_coin / last
             base_amt = make_amount(trading, symbol, base_amt)
 
-            log(f"💸 Market BUY {symbol}: ~{base_amt} base ≈ {per_coin:.4f} USDT @ {last:.6g}")
+            log(f"💸 Market BUY {symbol}: amount≈{base_amt} base @ last≈{last}")
             order = trading.create_market_buy_order(symbol, base_amt)
-            log("⏳ Fetching order/trades to get filled price…")
 
-            filled_price = None
+            filled = last
             try:
-                full_order = trading.fetch_order(order["id"], symbol)
-            except Exception:
-                full_order = order
+                full = trading.fetch_order(order["id"], symbol)
+                if full.get("average"):
+                    filled = float(full["average"])
+                elif full.get("price"):
+                    filled = float(full["price"])
+            except:
+                pass
 
-            trades = full_order.get("trades") or full_order.get("info", {}).get("trades")
-            if trades:
-                try:
-                    last_trade = trades[-1]
-                    filled_price = float(
-                        last_trade.get("price")
-                        or last_trade.get("info", {}).get("price")
-                    )
-                except Exception:
-                    filled_price = None
+            log(f"✅ Bought {symbol} around {filled:.8f}")
 
-            if filled_price is None:
-                if full_order.get("price"):
-                    filled_price = float(full_order["price"])
-                elif full_order.get("average"):
-                    filled_price = float(full_order["average"])
-                else:
-                    filled_price = last
-
-            entry = float(filled_price)
-            log(f"✅ Bought {symbol} around {entry:.8f} (filled price)")
-
-            if use_tp and tp_pct > 0:
-                tp_price = make_tp_price(trading, symbol, entry, tp_pct)
-                tp_amount = base_amt
-                eff = (tp_price / entry - 1) * 100.0
-                log(
-                    f"📌 TP LIMIT SELL {symbol}: amount={tp_amount} @ {tp_price} "
-                    f"(target {tp_pct:.4f}% | effective {eff:.4f}%)"
-                )
-                tp_order = trading.create_limit_sell_order(symbol, tp_amount, tp_price)
+            if TP_PCT > 0:
+                tp_price = make_tp_price(trading, symbol, filled, TP_PCT)
+                log(f"📌 TP LIMIT SELL {symbol}: amount={base_amt} @ {tp_price} (+{TP_PCT}%)")
+                trading.create_limit_sell_order(symbol, base_amt, tp_price)
                 log("✅ TP order placed.")
-
-            if use_sl and sl_pct and sl_pct > 0:
-                sl_price = entry * (1 - sl_pct / 100.0)
-                log(f"🛑 Suggested SL @ {sl_price:.8f} (-{sl_pct:.2f}%) — NOT auto-placed.")
 
         except Exception as e:
             log(f"❌ Error buying {symbol}: {e}")
 
-    log("\n✅ Auto-buy loop finished.")
+    log("✅ Auto-buy finished.")
 
-# -------------------------
-# MAIN ENTRY: runs screener, then auto-buy at 16:59:59 Lagos
-# -------------------------
 def main():
-    lagos = pytz.timezone(LOCAL_TZ)
-    now_lagos = datetime.now(lagos)
-    log(f"Starting scheduled MEXC bot. Lagos time now: {now_lagos.strftime('%Y-%m-%d %H:%M:%S')}")
-
-    results, fname, ex_public = run_screener(
-        ex_id="mexc",
-        quote="USDT",
-        timeframe="1h",
-        vol_min=DEFAULTS["vol_min"],
-        vol_max=DEFAULTS["vol_max"],
-        history_days=DEFAULTS["history_days"],
-        target_list=parse_targets(DEFAULTS["target_str"]),
-        anchor_mode="hour",
-        anchor_hour=DEFAULTS["anchor_hour"],
-        use_local_tz=True,
-        fees_slip=DEFAULTS["fees_slip"],
-    )
+    now_lagos = datetime.now(TZ_LAGOS)
+    log(f"Starting bot. Lagos time now: {now_lagos.strftime('%Y-%m-%d %H:%M:%S')}")
+    results, fname, ex_public = run_screener()
 
     if results is None or results.empty:
-        log("No screener results, exiting.")
+        log("No screener results. Exiting.")
         return
 
-    auto_buy_from_results(
-        ex=ex_public,
-        ex_id="mexc",
-        results_df=results,
-        ranks_to_buy="1",  # buy Rank 1 only
-        mode_buy_size="pct",
-        pct_of_balance=DEFAULTS["buy_pct_balance"],
-        fixed_usdt=DEFAULTS["buy_fixed_usdt"],
-        tp_pct=DEFAULTS["tp_pct"],
-        use_tp=True,
-        use_sl=False,
-        sl_value=None,
-        buy_time_str=DEFAULTS["buy_time"],  # waits until 16:59:59 Lagos
-    )
+    if DO_BUY == 1:
+        log("DO_BUY=1 → Trading enabled.")
+        auto_buy_from_results(results)
+    else:
+        log("DO_BUY=0 → Screener only (no trades).")
 
 if __name__ == "__main__":
     main()
