@@ -2,7 +2,7 @@ name: run-mexc-bot-daily
 
 on:
   schedule:
-    - cron: "50 12 * * *"   # 13:50 Lagos (UTC+1)
+    - cron: "28 13 * * *"   # 14:28 Lagos (UTC+1)
   workflow_dispatch:
 
 jobs:
