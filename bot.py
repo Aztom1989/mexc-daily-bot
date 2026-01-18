@@ -41,17 +41,17 @@ def env_str(name, default):
 HISTORY_DAYS   = env_int("HISTORY_DAYS", 30)
 MIN_DAYS_OLD   = env_int("MIN_DAYS_OLD", 3)
 
-VOL_MIN        = env_float("VOL_MIN", 10_000_000)
-VOL_MAX        = env_float("VOL_MAX", 600_000_000)
+VOL_MIN        = env_float("VOL_MIN", 100_000)
+VOL_MAX        = env_float("VOL_MAX", 60_000_000)
 
-TARGET_PCT     = env_float("TARGET_PCT", 3.0)
-ANCHOR_HOUR    = env_int("ANCHOR_HOUR", 15)
+TARGET_PCT     = env_float("TARGET_PCT", 50.0)
+ANCHOR_HOUR    = env_int("ANCHOR_HOUR", 17)
 
 TOP_N          = env_int("TOP_N", 20)
 
 DO_BUY         = env_int("DO_BUY", 1)
 BUY_RANKS      = env_str("BUY_RANKS", "1")
-BUY_TIME       = env_str("BUY_TIME", "15:45:58")
+BUY_TIME       = env_str("BUY_TIME", "16:59:57")
 BUY_PCT_BALANCE = env_float("BUY_PCT_BALANCE", 50.0)
 TP_PCT          = env_float("TP_PCT", 50.0)
 
