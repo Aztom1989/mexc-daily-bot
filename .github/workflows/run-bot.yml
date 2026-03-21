@@ -2,7 +2,7 @@ name: run-mexc-bot-daily
 
 on:
   schedule:
-    - cron: "27 10 * * *"   # 11:27 Lagos (UTC+1)
+    - cron: "45 10 * * *"   # 11:45 Lagos (UTC+1)
   workflow_dispatch:
 
 jobs:
@@ -40,7 +40,7 @@ jobs:
           # Trading settings (optional)
           DO_BUY: "1"              # 1 = trade, 0 = scan only
           BUY_RANKS: "1,2"
-          BUY_TIME: "11:30:30"     # Lagos time
+          BUY_TIME: "11:59:59"     # Lagos time
           BUY_PCT_BALANCE: "50"
           TP_PCT: "50"
 
